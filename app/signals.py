@@ -1,4 +1,4 @@
-"""
+kilo"""
 Moteur de décision de Nato Trade.
 Combine tendance (H1/M30), confirmation d'entrée (M15/M5/M1) et filtre de
 volatilité pour décider si un signal doit être émis, puis calcule SL/TP.
@@ -89,4 +89,4 @@ def evaluate_entry(
 
     direction = "achat" if trend_direction == "haussier" else "vente"
     if mode == "scalping":
-        direction = "achat" if df_entry["macd_hist"].iloc[-1] > 0 else "vente
+                direction = "achat" if df_entry["macd_hist"].iloc[-1] > 0 else "vente"
