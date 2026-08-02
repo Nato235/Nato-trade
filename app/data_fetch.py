@@ -1,6 +1,6 @@
 """
-Récupération des données de marché depuis Twelve Data.
-Gère les appels API et la mise en forme des bougies (OHLC) en DataFrame pandas.
+Recuperation des donnees de marche depuis Twelve Data.
+Gere les appels API et la mise en forme des bougies (OHLC) en DataFrame pandas.
 """
 
 import time
@@ -25,9 +25,6 @@ def _respect_rate_limit():
 
 
 def fetch_candles(symbol: str, interval: str, output_size: int = 200) -> pd.DataFrame:
-    """
-    Récupère les bougies OHLC pour un actif et un timeframe donné.
-    """
     _respect_rate_limit()
 
     params = {
@@ -45,7 +42,7 @@ def fetch_candles(symbol: str, interval: str, output_size: int = 200) -> pd.Data
         response.raise_for_status()
         payload = response.json()
     except requests.RequestException as exc:
-        logger.error("Erreur réseau Twelve Data pour %s/%s: %s", symbol, interval, exc)
+        logger.error("Erreur reseau Twelve Data pour %s/%s: %s", symbol, interval, exc)
         return pd.DataFrame()
 
     if payload.get("status") == "error":
@@ -59,10 +56,14 @@ def fetch_candles(symbol: str, interval: str, output_size: int = 200) -> pd.Data
 
     values = payload.get("values", [])
     if not values:
-        logger.warning("Aucune donnée reçue pour %s/%s", symbol, interval)
+        logger.warning("Aucune donnee recue pour %s/%s", symbol, interval)
         return pd.DataFrame()
 
     df = pd.DataFrame(values)
     df["datetime"] = pd.to_datetime(df["datetime"])
     for col in ("open", "high", "low", "close"):
-        df[col] =
+        df[col] = df[col].astype(float)
+    if "volume" in df.columns:
+        df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
+
+    return df.sort_values("datetime").reset_index(drop=True)
