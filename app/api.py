@@ -1,9 +1,9 @@
 """
-API HTTP + lancement du moteur d'analyse en tâche de fond.
-Sur Render (plan gratuit), un seul type de service est autorisé sans carte
-bancaire : un "Web Service" qui répond aux requêtes HTTP. On fait donc tourner
-la boucle d'analyse (normalement dans main.py) dans un thread à part au sein
-de ce même processus, pour n'avoir qu'un seul service à déployer.
+API HTTP + lancement du moteur d'analyse en tache de fond.
+Sur Render (plan gratuit), un seul type de service est autorise sans carte
+bancaire : un "Web Service" qui repond aux requetes HTTP. On fait donc tourner
+la boucle d'analyse (normalement dans main.py) dans un thread a part au sein
+de ce meme processus, pour n'avoir qu'un seul service a deployer.
 
 Lancement : uvicorn app.api:app --host 0.0.0.0 --port $PORT
 """
@@ -12,8 +12,10 @@ import threading
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
-from . import config, database
+from . import config, database, data_fetch
 from .main import run_forever
 
 app = FastAPI(title="Nato Trade API")
@@ -27,6 +29,8 @@ app.add_middleware(
 
 _scalping_state = {"enabled": config.SCALPING_ENABLED}
 
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
 
 @app.on_event("startup")
 def start_analysis_engine():
@@ -36,12 +40,31 @@ def start_analysis_engine():
 
 @app.get("/")
 def root():
-    return {"status": "Nato Trade en ligne"}
+    return FileResponse("app/static/index.html")
 
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/candles")
+def get_candles(asset: str, timeframe: str, limit: int = 100):
+    df = data_fetch.fetch_candles(asset, timeframe, output_size=limit)
+    if df.empty:
+        return {"candles": []}
+
+    candles = [
+        {
+            "time": row["datetime"].isoformat(),
+            "open": row["open"],
+            "high": row["high"],
+            "low": row["low"],
+            "close": row["close"],
+        }
+        for _, row in df.iterrows()
+    ]
+    return {"candles": candles}
 
 
 @app.get("/assets")
@@ -57,7 +80,7 @@ def get_scalping_state():
 @app.post("/scalping/{state}")
 def set_scalping_state(state: str):
     if state not in ("on", "off"):
-        raise HTTPException(status_code=400, detail="state doit être 'on' ou 'off'")
+        raise HTTPException(status_code=400, detail="state doit etre 'on' ou 'off'")
     _scalping_state["enabled"] = state == "on"
     return _scalping_state
 
