@@ -19,7 +19,7 @@ from . import config
 
 logger = logging.getLogger("nato_trade.data_fetch")
 
-_MIN_SECONDS_BETWEEN_CALLS = 8.0
+_MIN_SECONDS_BETWEEN_CALLS = 11.0
 _last_call_ts = 0.0
 _rate_limit_lock = threading.Lock()
 
