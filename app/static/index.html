@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0">
+<title>Nato Trade</title>
+
+<link rel="manifest" href="/static/manifest.json">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Nato Trade">
+<meta name="theme-color" content="#0B0E11">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+
+<style>
+  :root {
+    --bg: #0B0E11;
+    --panel: #14181D;
+    --panel-2: #1B2027;
+    --border: #262B33;
+    --text: #EAECEF;
+    --text-dim: #848E9C;
+    --buy: #0ECB81;
+    --sell: #F6465D;
+    --gold: #F0B90B;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; overscroll-behavior-y: contain; }
+  .mono { font-family: 'JetBrains Mono', monospace; }
+  #app { display: flex; flex-direction: column; height: 100vh; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+  .ticker-wrap { background: #000; border-bottom: 1px solid var(--border); overflow: hidden; white-space: nowrap; height: 34px; flex-shrink: 0; }
+  .ticker { display: inline-block; padding-left: 100%; animation: scroll-left 28s linear infinite; line-height: 34px; }
+  @media (prefers-reduced-motion: reduce) { .ticker { animation: none; padding-left: 12px; } }
+  .ticker span { font-size: 12px; margin-right: 28px; }
+  @keyframes scroll-left { 0% { transform: translateX(0); } 100% { transform: translateX(-100%); } }
+  .topbar { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px 10px; flex-shrink: 0; }
+  .brand { font-size: 15px; font-weight: 700; letter-spacing: 0.02em; }
+  .brand .dot { color: var(--gold); }
+  .scalp-toggle { display: flex; align-items: center; gap: 8px; background: var(--panel); border: 1px solid var(--border); border-radius: 20px; padding: 6px 6px 6px 12px; font-size: 12px; color: var(--text-dim); }
+  .switch { width: 38px; height: 22px; background: #2B3139; border-radius: 20px; position: relative; transition: background .2s; }
+  .switch.on { background: var(--gold); }
+  .switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; background: #fff; border-radius: 50%; transition: transform .2s; }
+  .switch.on::after { transform: translateX(16px); }
+  .assets-row { display: flex; gap: 8px; padding: 4px 16px 12px; overflow-x: auto; flex-shrink: 0; }
+  .assets-row::-webkit-scrollbar { display: none; }
+  .chip { flex-shrink: 0; padding: 8px 14px; border-radius: 10px; background: var(--panel); border: 1px solid var(--border); font-size: 13px; font-weight: 600; color: var(--text-dim); white-space: nowrap; }
+  .chip.active { background: rgba(240,185,11,0.12); border-color: var(--gold); color: var(--gold); }
+  .tf-row { display: flex; gap: 6px; padding: 0 16px 12px; flex-shrink: 0; }
+  .tf-btn { flex: 1; text-align: center; padding: 8px 0; border-radius: 8px; background: var(--panel); border: 1px solid var(--border); font-size: 12px; font-weight: 600; color: var(--text-dim); }
+  .tf-btn.active { background: var(--panel-2); color: var(--text); border-color: #3A4048; }
+  .main { flex: 1; overflow-y: auto; padding: 0 16px 16px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 14px; margin-bottom: 14px; }
+  .price-row { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px; }
+  .price-value { font-size: 22px; font-weight: 600; }
+  .trend-badge { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 6px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .trend-badge.haussier { background: rgba(14,203,129,0.14); color: var(--buy); }
+  .trend-badge.baissier { background: rgba(246,70,93,0.14); color: var(--sell); }
+  .trend-badge.neutre { background: rgba(132,142,156,0.14); color: var(--text-dim); }
+  canvas#chart { width: 100% !important; height: 220px !important; }
+  .empty-state { text-align: center; padding: 30px 10px; color: var(--text-dim); font-size: 13px; }
+  .section-label { font-size: 11px; font-weight: 700; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.06em; margin: 4px 0 10px; }
+  .signal-item { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .signal-item:last-child { border-bottom: none; }
+  .signal-dir { font-size: 13px; font-weight: 700; padding: 4px 8px; border-radius: 6px; margin-right: 10px; }
+  .signal-dir.achat { background: rgba(14,203,129,0.14); color: var(--buy); }
+  .signal-dir.vente { background: rgba(246,70,93,0.14); color: var(--sell); }
+  .signal-meta { font-size: 11px; color: var(--text-dim); }
+  .signal-levels { text-align: right; font-size: 12px; }
+  .signal-confidence { color: var(--gold); font-size: 10px; margin-left: 6px; }
+  .tabbar { display: flex; border-top: 1px solid var(--border); background: var(--panel); flex-shrink: 0; }
+  .tab { flex: 1; text-align: center; padding: 12px 0 10px; font-size: 11px; color: var(--text-dim); font-weight: 600; }
+  .tab.active { color: var(--gold); }
+  .stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 14px; }
+  .stat-box { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px; text-align: center; }
+  .stat-value { font-size: 18px; font-weight: 700; }
+  .stat-label { font-size: 10px; color: var(--text-dim); margin-top: 2px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div class="ticker-wrap"><div class="ticker mono" id="ticker">Chargement des prix…</div></div>
+
+  <div class="topbar">
+    <div class="brand">NATO <span class="dot">•</span> TRADE</div>
+    <div class="scalp-toggle" id="scalpToggle">
+      <span>Scalping</span>
+      <div class="switch" id="scalpSwitch"></div>
+    </div>
+  </div>
+
+  <div class="assets-row" id="assetsRow"></div>
+  <div class="tf-row" id="tfRow"></div>
+
+  <div class="main">
+    <div id="dashboardView">
+      <div class="card">
+        <div class="price-row">
+          <span class="price-value mono" id="currentPrice">—</span>
+          <span class="trend-badge neutre" id="trendBadge">…</span>
+        </div>
+        <canvas id="chart"></canvas>
+      </div>
+      <div class="section-label">Derniers signaux</div>
+      <div class="card" id="signalsList">
+        <div class="empty-state">Pas encore de signal sur cet actif.<br>Le bot reste silencieux tant que rien n'est confirmé.</div>
+      </div>
+    </div>
+
+    <div id="historyView" class="hidden">
+      <div class="section-label">Performance</div>
+      <div class="stat-grid" id="statGrid"></div>
+      <div class="section-label">Tous les signaux</div>
+      <div class="card" id="allSignalsList">
+        <div class="empty-state">Aucun signal enregistré pour le moment.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="tabbar">
+    <div class="tab active" data-view="dashboardView">Tableau de bord</div>
+    <div class="tab" data-view="historyView">Historique</div>
+  </div>
+</div>
+
+<script>
+const API = '';
+const ASSETS_FALLBACK = ["EUR/USD","GBP/USD","USD/JPY","USD/CHF","BTC/USD","ETH/USD","XRP/USD"];
+const TIMEFRAMES = [
+  { label: "H1", value: "1h" }, { label: "M30", value: "30min" }, { label: "M15", value: "15min" },
+  { label: "M5", value: "5min" }, { label: "M1", value: "1min" },
+];
+let state = { assets: ASSETS_FALLBACK, asset: ASSETS_FALLBACK[0], timeframe: "1h", scalping: false, chart: null };
+
+async function safeFetch(path) {
+  try {
+    const res = await fetch(API + path);
+    if (!res.ok) throw new Error('bad response');
+    return await res.json();
+  } catch (e) { console.error('Erreur fetch', path, e); return null; }
+}
+
+function renderAssets() {
+  const row = document.getElementById('assetsRow');
+  row.innerHTML = '';
+  state.assets.forEach(a => {
+    const chip = document.createElement('div');
+    chip.className = 'chip' + (a === state.asset ? ' active' : '');
+    chip.textContent = a;
+    chip.onclick = () => { state.asset = a; renderAssets(); loadDashboard(); };
+    row.appendChild(chip);
+  });
+}
+
+function renderTimeframes() {
+  const row = document.getElementById('tfRow');
+  row.innerHTML = '';
+  TIMEFRAMES.forEach(tf => {
+    const btn = document.createElement('div');
+    btn.className = 'tf-btn' + (tf.value === state.timeframe ? ' active' : '');
+    btn.textContent = tf.label;
+    btn.onclick = () => { state.timeframe = tf.value; renderTimeframes(); loadDashboard(); };
+    row.appendChild(btn);
+  });
+}
+
+function fmtPrice(v) {
+  if (v === null || v === undefined) return '—';
+  return Number(v).toFixed(v < 10 ? 5 : 2);
+}
+
+async function loadDashboard() {
+  const data = await safeFetch(`/candles?asset=${encodeURIComponent(state.asset)}&timeframe=${state.timeframe}&limit=80`);
+  const candles = data?.candles || [];
+  if (candles.length === 0) {
+    document.getElementById('currentPrice').textContent = '—';
+    if (state.chart) { state.chart.destroy(); state.chart = null; }
+    return;
+  }
+  const last = candles[candles.length - 1];
+  document.getElementById('currentPrice').textContent = fmtPrice(last.close);
+  drawChart(candles);
+  loadSignalsForAsset();
+}
+
+function drawChart(candles) {
+  const ctx = document.getElementById('chart').getContext('2d');
+  const labels = candles.map(c => c.time.slice(11, 16));
+  const closes = candles.map(c => c.close);
+  if (state.chart) state.chart.destroy();
+  state.chart = new Chart(ctx, {
+    type: 'line',
+    data: { labels, datasets: [{ data: closes, borderColor: '#F0B90B', borderWidth: 1.5, pointRadius: 0, tension: 0.15, fill: false }] },
+    options: {
+      responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
+      scales: { x: { display: false }, y: { ticks: { color: '#848E9C', font: { size: 10 } }, grid: { color: '#1B2027' } } }
+    }
+  });
+}
+
+function signalRow(sig) {
+  const confBadge = sig.high_confidence ? '<span class="signal-confidence">★ HAUTE CONFIANCE</span>' : '';
+  return `
+    <div class="signal-item">
+      <div style="display:flex; align-items:center;">
+        <span class="signal-dir ${sig.direction}">${sig.direction === 'achat' ? 'ACHAT' : 'VENTE'}</span>
+        <div>
+          <div style="font-size:13px; font-weight:600;">${sig.asset} · ${sig.timeframe}${confBadge}</div>
+          <div class="signal-meta">${sig.mode === 'scalping' ? 'Scalping' : 'Prudent'} · ${new Date(sig.created_at).toLocaleString('fr-FR')}</div>
+        </div>
+      </div>
+      <div class="signal-levels mono">
+        <div>TP ${fmtPrice(sig.take_profit)}</div>
+        <div style="color:var(--text-dim)">SL ${fmtPrice(sig.stop_loss)}</div>
+      </div>
+    </div>`;
+}
+
+async function loadSignalsForAsset() {
+  const data = await safeFetch(`/signals?asset=${encodeURIComponent(state.asset)}&limit=10`);
+  const signals = data?.signals || [];
+  const container = document.getElementById('signalsList');
+  if (signals.length === 0) {
+    container.innerHTML = '<div class="empty-state">Pas encore de signal sur cet actif.<br>Le bot reste silencieux tant que rien n\'est confirmé.</div>';
+    return;
+  }
+  container.innerHTML = signals.map(signalRow).join('');
+}
+
+async function loadTicker() {
+  const parts = [];
+  for (const asset of state.assets) {
+    const data = await safeFetch(`/candles?asset=${encodeURIComponent(asset)}&timeframe=1h&limit=2`);
+    const candles = data?.candles || [];
+    if (candles.length > 0) parts.push(`<span>${asset} <b>${fmtPrice(candles[candles.length-1].close)}</b></span>`);
+  }
+  if (parts.length > 0) document.getElementById('ticker').innerHTML = parts.join('') + parts.join('');
+}
+
+async function loadHistory() {
+  const perf = await safeFetch('/performance');
+  const summary = perf?.summary || [];
+  let totalSignals = 0, tpHit = 0, slHit = 0;
+  summary.forEach(row => {
+    totalSignals += row.count;
+    if (row.result === 'tp_touche') tpHit += row.count;
+    if (row.result === 'sl_touche') slHit += row.count;
+  });
+  const winRate = (tpHit + slHit) > 0 ? Math.round((tpHit / (tpHit + slHit)) * 100) : 0;
+  document.getElementById('statGrid').innerHTML = `
+    <div class="stat-box"><div class="stat-value">${totalSignals}</div><div class="stat-label">Signaux totaux</div></div>
+    <div class="stat-box"><div class="stat-value" style="color:var(--buy)">${winRate}%</div><div class="stat-label">Taux de réussite</div></div>
+    <div class="stat-box"><div class="stat-value">${tpHit}/${slHit}</div><div class="stat-label">TP / SL touchés</div></div>
+  `;
+  const data = await safeFetch('/signals?limit=50');
+  const signals = data?.signals || [];
+  const container = document.getElementById('allSignalsList');
+  container.innerHTML = signals.length > 0 ? signals.map(signalRow).join('') : '<div class="empty-state">Aucun signal enregistré pour le moment.</div>';
+}
+
+function setupScalpToggle() {
+  const el = document.getElementById('scalpSwitch');
+  el.onclick = async () => {
+    state.scalping = !state.scalping;
+    el.classList.toggle('on', state.scalping);
+    await fetch(`/scalping/${state.scalping ? 'on' : 'off'}`, { method: 'POST' });
+  };
+}
+
+function setupTabs() {
+  document.querySelectorAll('.tab').forEach(tab => {
+    tab.onclick = () => {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      document.getElementById('dashboardView').classList.add('hidden');
+      document.getElementById('historyView').classList.add('hidden');
+      document.getElementById(tab.dataset.view).classList.remove('hidden');
+      if (tab.dataset.view === 'historyView') loadHistory();
+    };
+  });
+}
+
+async function init() {
+  const assetsData = await safeFetch('/assets');
+  if (assetsData?.assets?.length) { state.assets = assetsData.assets; state.asset = assetsData.assets[0]; }
+  const scalpData = await safeFetch('/scalping');
+  if (scalpData) {
+    state.scalping = scalpData.enabled;
+    document.getElementById('scalpSwitch').classList.toggle('on', state.scalping);
+  }
+  renderAssets(); renderTimeframes(); setupScalpToggle(); setupTabs(); loadDashboard(); loadTicker();
+}
+
+init();
+</script>
+</body>
+</html>
