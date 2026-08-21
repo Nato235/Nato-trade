@@ -1,15 +1,13 @@
 """
-Récupération des données de marché depuis Twelve Data.
+Récupération optimisée des données Twelve Data.
 
-Fonctionnalités :
-- Limitation globale des appels API.
-- Maximum de 7 appels par fenêtre de 60 secondes.
-- Minimum de 9 secondes entre deux appels.
-- Cache partagé par symbole + timeframe.
-- Réutilisation des données déjà téléchargées.
-- Protection contre les erreurs 429.
-- Reprise automatique après limitation API.
-- Utilisation du cache en cas d'erreur réseau.
+Objectifs :
+- maximum 7 appels par fenêtre de 60 secondes ;
+- minimum 9 secondes entre deux appels ;
+- cache intelligent ;
+- utilisation du cache expiré en cas de blocage/erreur ;
+- reprise automatique après limitation ;
+- aucune boucle agressive contre Twelve Data.
 """
 
 import time
@@ -27,20 +25,15 @@ logger = logging.getLogger("nato_trade.data_fetch")
 
 
 # ============================================================
-# LIMITATION TWELVE DATA
+# LIMITES TWELVE DATA
 # ============================================================
 
-# Ton plan gratuit est indiqué comme étant à 8 requêtes/minute.
-# On garde volontairement une marge de sécurité.
 _MAX_CALLS_PER_MINUTE = 7
-
-# Minimum entre deux requêtes.
 _MIN_SECONDS_BETWEEN_CALLS = 9.0
 
 _call_times = deque()
 _rate_limit_lock = threading.Lock()
 
-# Timestamp jusqu'auquel l'API est considérée comme temporairement bloquée.
 _api_blocked_until = 0.0
 
 
@@ -48,17 +41,11 @@ _api_blocked_until = 0.0
 # CACHE
 # ============================================================
 
-_CACHE_TTL_SECONDS = 45
+# On garde les données plusieurs minutes.
+# Les bougies anciennes restent utilisables si Twelve Data
+# est temporairement indisponible.
+_CACHE_TTL_SECONDS = 180
 
-# IMPORTANT :
-# La clé ne contient PAS output_size.
-#
-# Exemple :
-# USD/JPY + 1h + 200
-# puis
-# USD/JPY + 1h + 80
-#
-# utilisent le même cache.
 _cache = {}
 _cache_lock = threading.Lock()
 
@@ -75,9 +62,6 @@ _session = requests.Session()
 # ============================================================
 
 def _wait_for_api_slot():
-    """
-    Attend jusqu'à ce qu'une nouvelle requête Twelve Data soit autorisée.
-    """
 
     while True:
 
@@ -86,40 +70,57 @@ def _wait_for_api_slot():
             now = time.time()
 
             # ------------------------------------------------
-            # Blocage après 429
+            # Blocage Twelve Data
             # ------------------------------------------------
 
             if now < _api_blocked_until:
+
                 wait = _api_blocked_until - now
+
             else:
+
                 wait = 0.0
 
             # ------------------------------------------------
-            # Supprimer les appels vieux de plus de 60 secondes
+            # Nettoyage des anciens appels
             # ------------------------------------------------
 
-            while _call_times and now - _call_times[0] >= 60:
+            while (
+                _call_times
+                and now - _call_times[0] >= 60
+            ):
+
                 _call_times.popleft()
 
             # ------------------------------------------------
-            # Maximum 7 appels / minute
+            # Maximum 7 appels/minute
             # ------------------------------------------------
 
-            if wait <= 0 and len(_call_times) >= _MAX_CALLS_PER_MINUTE:
+            if (
+                wait <= 0
+                and len(_call_times)
+                >= _MAX_CALLS_PER_MINUTE
+            ):
 
                 wait = (
                     60
                     - (now - _call_times[0])
-                    + 1.0
+                    + 1
                 )
 
             # ------------------------------------------------
-            # Minimum entre deux appels
+            # Minimum 9 secondes entre appels
             # ------------------------------------------------
 
-            if wait <= 0 and _call_times:
+            if (
+                wait <= 0
+                and _call_times
+            ):
 
-                elapsed = now - _call_times[-1]
+                elapsed = (
+                    now
+                    - _call_times[-1]
+                )
 
                 if elapsed < _MIN_SECONDS_BETWEEN_CALLS:
 
@@ -129,38 +130,45 @@ def _wait_for_api_slot():
                     )
 
             # ------------------------------------------------
-            # Slot disponible
+            # Autorisé
             # ------------------------------------------------
 
             if wait <= 0:
 
-                _call_times.append(time.time())
+                _call_times.append(
+                    time.time()
+                )
 
                 return
 
         logger.warning(
-            "Limiteur Twelve Data : attente %.1f secondes",
+            "Twelve Data limité : attente %.1f secondes",
             wait,
         )
 
-        time.sleep(max(wait, 0.5))
+        time.sleep(
+            max(wait, 0.5)
+        )
 
 
 # ============================================================
 # BLOCAGE API
 # ============================================================
 
-def _block_api(seconds: float):
+def _block_api(seconds):
 
     global _api_blocked_until
 
     with _rate_limit_lock:
 
-        new_until = time.time() + seconds
+        until = (
+            time.time()
+            + float(seconds)
+        )
 
-        if new_until > _api_blocked_until:
+        if until > _api_blocked_until:
 
-            _api_blocked_until = new_until
+            _api_blocked_until = until
 
     logger.warning(
         "Twelve Data temporairement bloqué pendant %.1f secondes",
@@ -173,94 +181,110 @@ def _block_api(seconds: float):
 # ============================================================
 
 def _get_cached(
-    symbol: str,
-    interval: str,
-    output_size: int,
+    symbol,
+    interval,
+    output_size,
 ):
 
-    cache_key = (symbol, interval)
+    key = (
+        symbol,
+        interval,
+    )
 
     with _cache_lock:
 
-        cached = _cache.get(cache_key)
+        item = _cache.get(key)
 
-        if not cached:
+        if item is None:
             return None
 
-        timestamp, df = cached
+        timestamp, df = item
 
-        age = time.time() - timestamp
+        age = (
+            time.time()
+            - timestamp
+        )
 
-        if age >= _CACHE_TTL_SECONDS:
+        if age > _CACHE_TTL_SECONDS:
+
             return None
 
         if len(df) < output_size:
+
             return None
 
-        return df.tail(output_size).copy()
+        return df.tail(
+            output_size
+        ).copy()
 
 
 def _get_stale_cached(
-    symbol: str,
-    interval: str,
+    symbol,
+    interval,
+    output_size,
 ):
 
-    """
-    Retourne les données du cache même si elles sont expirées.
-
-    Utile lorsqu'une requête Twelve Data échoue.
-    """
-
-    cache_key = (symbol, interval)
+    key = (
+        symbol,
+        interval,
+    )
 
     with _cache_lock:
 
-        cached = _cache.get(cache_key)
+        item = _cache.get(key)
 
-        if not cached:
+        if item is None:
             return None
 
-        _, df = cached
+        _, df = item
 
         if df.empty:
             return None
 
-        return df.copy()
+        return df.tail(
+            output_size
+        ).copy()
 
 
 def _save_cache(
-    symbol: str,
-    interval: str,
-    df: pd.DataFrame,
+    symbol,
+    interval,
+    df,
 ):
 
-    cache_key = (symbol, interval)
+    key = (
+        symbol,
+        interval,
+    )
 
     with _cache_lock:
 
-        _cache[cache_key] = (
+        _cache[key] = (
             time.time(),
             df.copy(),
         )
 
 
 # ============================================================
-# FETCH CANDLES
+# FETCH
 # ============================================================
 
 def fetch_candles(
-    symbol: str,
-    interval: str,
-    output_size: int = 200,
-) -> pd.DataFrame:
+    symbol,
+    interval,
+    output_size=200,
+):
 
     output_size = max(
         1,
-        min(int(output_size), 5000),
+        min(
+            int(output_size),
+            5000,
+        ),
     )
 
     # ========================================================
-    # 1. CACHE
+    # CACHE VALIDE
     # ========================================================
 
     cached = _get_cached(
@@ -272,16 +296,15 @@ def fetch_candles(
     if cached is not None:
 
         logger.debug(
-            "Cache utilisé : %s/%s (%s bougies)",
+            "Cache utilisé : %s/%s",
             symbol,
             interval,
-            output_size,
         )
 
         return cached
 
     # ========================================================
-    # 2. LIMITEUR
+    # PROTECTION GLOBALE
     # ========================================================
 
     _wait_for_api_slot()
@@ -294,396 +317,291 @@ def fetch_candles(
         "order": "ASC",
     }
 
-    max_attempts = 3
+    try:
 
-    # ========================================================
-    # 3. REQUÊTE
-    # ========================================================
+        response = _session.get(
+            f"{config.TWELVE_DATA_BASE_URL}/time_series",
+            params=params,
+            timeout=15,
+        )
 
-    for attempt in range(1, max_attempts + 1):
+        # ====================================================
+        # RATE LIMIT
+        # ====================================================
 
-        try:
+        if response.status_code == 429:
 
-            response = _session.get(
-                f"{config.TWELVE_DATA_BASE_URL}/time_series",
-                params=params,
-                timeout=15,
-            )
-
-            # =================================================
-            # 429
-            # =================================================
-
-            if response.status_code == 429:
-
-                retry_after = response.headers.get(
+            retry_after = (
+                response.headers.get(
                     "Retry-After"
                 )
+            )
 
-                if retry_after:
+            try:
 
-                    try:
-                        wait_seconds = float(retry_after)
+                wait_seconds = (
+                    float(retry_after)
+                    if retry_after
+                    else 60.0
+                )
 
-                    except ValueError:
-                        wait_seconds = 30.0
+            except ValueError:
 
-                else:
+                wait_seconds = 60.0
 
-                    wait_seconds = 30.0 * attempt
+            _block_api(
+                wait_seconds
+            )
+
+            fallback = _get_stale_cached(
+                symbol,
+                interval,
+                output_size,
+            )
+
+            if fallback is not None:
 
                 logger.warning(
-                    "429 Twelve Data pour %s/%s "
-                    "(tentative %s/%s). "
-                    "Attente %.1f secondes.",
-                    symbol,
-                    interval,
-                    attempt,
-                    max_attempts,
-                    wait_seconds,
-                )
-
-                _block_api(wait_seconds)
-
-                if attempt < max_attempts:
-
-                    time.sleep(wait_seconds)
-
-                    _wait_for_api_slot()
-
-                    continue
-
-                # ------------------------------------------------
-                # Après plusieurs 429 :
-                # utiliser le cache expiré si disponible.
-                # ------------------------------------------------
-
-                fallback = _get_stale_cached(
+                    "429 : utilisation du cache "
+                    "pour %s/%s",
                     symbol,
                     interval,
                 )
 
-                if fallback is not None:
+                return fallback
 
-                    logger.warning(
-                        "429 persistant : utilisation des "
-                        "anciennes données pour %s/%s",
-                        symbol,
-                        interval,
-                    )
+            return pd.DataFrame()
 
-                    return fallback.tail(
-                        output_size
-                    ).copy()
+        # ====================================================
+        # AUTRES ERREURS HTTP
+        # ====================================================
 
-                return pd.DataFrame()
+        response.raise_for_status()
 
-            # =================================================
-            # AUTRES ERREURS HTTP
-            # =================================================
+        payload = response.json()
 
-            response.raise_for_status()
+        # ====================================================
+        # ERREUR TWELVE DATA
+        # ====================================================
 
-            payload = response.json()
+        if payload.get("status") == "error":
 
-            # =================================================
-            # CRÉDITS
-            # =================================================
-
-            credits_used = response.headers.get(
-                "api-credits-used"
+            message = payload.get(
+                "message",
+                "Erreur Twelve Data",
             )
 
-            credits_left = response.headers.get(
-                "api-credits-left"
+            logger.warning(
+                "Erreur Twelve Data %s/%s : %s",
+                symbol,
+                interval,
+                message,
             )
 
-            if (
-                credits_used is not None
-                or credits_left is not None
-            ):
-
-                logger.info(
-                    "Twelve Data crédits : "
-                    "utilisés=%s, restants=%s",
-                    credits_used,
-                    credits_left,
-                )
-
-            # =================================================
-            # ERREUR API
-            # =================================================
-
-            if payload.get("status") == "error":
-
-                message = payload.get(
-                    "message",
-                    "Erreur inconnue Twelve Data",
-                )
-
-                logger.error(
-                    "Erreur API Twelve Data pour %s/%s : %s",
-                    symbol,
-                    interval,
-                    message,
-                )
-
-                fallback = _get_stale_cached(
-                    symbol,
-                    interval,
-                )
-
-                if fallback is not None:
-
-                    logger.warning(
-                        "Utilisation du cache après erreur API "
-                        "pour %s/%s",
-                        symbol,
-                        interval,
-                    )
-
-                    return fallback.tail(
-                        output_size
-                    ).copy()
-
-                return pd.DataFrame()
-
-            # =================================================
-            # VALEURS
-            # =================================================
-
-            values = payload.get(
-                "values",
-                [],
+            fallback = _get_stale_cached(
+                symbol,
+                interval,
+                output_size,
             )
 
-            if not values:
+            if fallback is not None:
 
-                logger.warning(
-                    "Aucune donnée reçue pour %s/%s",
-                    symbol,
-                    interval,
-                )
+                return fallback
 
-                fallback = _get_stale_cached(
-                    symbol,
-                    interval,
-                )
+            return pd.DataFrame()
 
-                if fallback is not None:
+        # ====================================================
+        # DONNÉES
+        # ====================================================
 
-                    return fallback.tail(
-                        output_size
-                    ).copy()
+        values = payload.get(
+            "values",
+            [],
+        )
+
+        if not values:
+
+            logger.warning(
+                "Aucune donnée : %s/%s",
+                symbol,
+                interval,
+            )
+
+            fallback = _get_stale_cached(
+                symbol,
+                interval,
+                output_size,
+            )
+
+            if fallback is not None:
+
+                return fallback
+
+            return pd.DataFrame()
+
+        df = pd.DataFrame(
+            values
+        )
+
+        # ====================================================
+        # DATETIME
+        # ====================================================
+
+        if "datetime" not in df.columns:
+
+            return pd.DataFrame()
+
+        df["datetime"] = pd.to_datetime(
+            df["datetime"],
+            errors="coerce",
+        )
+
+        # ====================================================
+        # OHLC
+        # ====================================================
+
+        for column in (
+            "open",
+            "high",
+            "low",
+            "close",
+        ):
+
+            if column not in df.columns:
 
                 return pd.DataFrame()
 
-            df = pd.DataFrame(values)
-
-            # =================================================
-            # DATETIME
-            # =================================================
-
-            if "datetime" not in df.columns:
-
-                logger.error(
-                    "Champ datetime absent pour %s/%s",
-                    symbol,
-                    interval,
-                )
-
-                return pd.DataFrame()
-
-            df["datetime"] = pd.to_datetime(
-                df["datetime"],
+            df[column] = pd.to_numeric(
+                df[column],
                 errors="coerce",
             )
 
-            # =================================================
-            # OHLC
-            # =================================================
+        # ====================================================
+        # VOLUME
+        # ====================================================
 
-            for col in (
+        if "volume" in df.columns:
+
+            df["volume"] = pd.to_numeric(
+                df["volume"],
+                errors="coerce",
+            )
+
+        # ====================================================
+        # NETTOYAGE
+        # ====================================================
+
+        df = df.dropna(
+            subset=[
+                "datetime",
                 "open",
                 "high",
                 "low",
                 "close",
-            ):
+            ]
+        )
 
-                if col not in df.columns:
-
-                    logger.error(
-                        "Colonne %s absente pour %s/%s",
-                        col,
-                        symbol,
-                        interval,
-                    )
-
-                    return pd.DataFrame()
-
-                df[col] = pd.to_numeric(
-                    df[col],
-                    errors="coerce",
-                )
-
-            # =================================================
-            # VOLUME
-            # =================================================
-
-            if "volume" in df.columns:
-
-                df["volume"] = pd.to_numeric(
-                    df["volume"],
-                    errors="coerce",
-                )
-
-            # =================================================
-            # NETTOYAGE
-            # =================================================
-
-            df = df.dropna(
-                subset=[
-                    "datetime",
-                    "open",
-                    "high",
-                    "low",
-                    "close",
-                ]
+        df = (
+            df
+            .sort_values("datetime")
+            .drop_duplicates(
+                subset=["datetime"],
+                keep="last",
             )
+            .reset_index(drop=True)
+        )
 
-            df = (
-                df
-                .sort_values("datetime")
-                .drop_duplicates(
-                    subset=["datetime"],
-                    keep="last",
-                )
-                .reset_index(drop=True)
-            )
-
-            if df.empty:
-
-                logger.warning(
-                    "DataFrame vide après nettoyage "
-                    "pour %s/%s",
-                    symbol,
-                    interval,
-                )
-
-                return pd.DataFrame()
-
-            # =================================================
-            # CACHE
-            # =================================================
-
-            _save_cache(
-                symbol,
-                interval,
-                df,
-            )
-
-            logger.debug(
-                "Données récupérées : %s/%s (%s bougies)",
-                symbol,
-                interval,
-                len(df),
-            )
-
-            return df.tail(
-                output_size
-            ).copy()
-
-        # =====================================================
-        # TIMEOUT
-        # =====================================================
-
-        except requests.Timeout:
-
-            logger.warning(
-                "Timeout Twelve Data pour %s/%s "
-                "(tentative %s/%s)",
-                symbol,
-                interval,
-                attempt,
-                max_attempts,
-            )
-
-            if attempt < max_attempts:
-
-                wait_seconds = 5 * attempt
-
-                time.sleep(wait_seconds)
-
-                _wait_for_api_slot()
-
-                continue
-
-            fallback = _get_stale_cached(
-                symbol,
-                interval,
-            )
-
-            if fallback is not None:
-
-                logger.warning(
-                    "Timeout : utilisation du cache "
-                    "pour %s/%s",
-                    symbol,
-                    interval,
-                )
-
-                return fallback.tail(
-                    output_size
-                ).copy()
+        if df.empty:
 
             return pd.DataFrame()
 
-        # =====================================================
-        # ERREUR RÉSEAU
-        # =====================================================
+        # ====================================================
+        # CACHE
+        # ====================================================
 
-        except requests.RequestException as exc:
+        _save_cache(
+            symbol,
+            interval,
+            df,
+        )
 
-            logger.error(
-                "Erreur réseau Twelve Data pour %s/%s : %s",
-                symbol,
-                interval,
-                exc,
-            )
+        logger.info(
+            "Données récupérées : %s/%s (%s bougies)",
+            symbol,
+            interval,
+            len(df),
+        )
 
-            fallback = _get_stale_cached(
-                symbol,
-                interval,
-            )
+        return df.tail(
+            output_size
+        ).copy()
 
-            if fallback is not None:
+    # ========================================================
+    # TIMEOUT
+    # ========================================================
 
-                logger.warning(
-                    "Erreur réseau : utilisation du cache "
-                    "pour %s/%s",
-                    symbol,
-                    interval,
-                )
+    except requests.Timeout:
 
-                return fallback.tail(
-                    output_size
-                ).copy()
+        logger.warning(
+            "Timeout Twelve Data : %s/%s",
+            symbol,
+            interval,
+        )
 
-            return pd.DataFrame()
+        fallback = _get_stale_cached(
+            symbol,
+            interval,
+            output_size,
+        )
 
-        # =====================================================
-        # JSON INVALIDE
-        # =====================================================
+        if fallback is not None:
 
-        except ValueError as exc:
+            return fallback
 
-            logger.error(
-                "Erreur JSON Twelve Data pour %s/%s : %s",
-                symbol,
-                interval,
-                exc,
-            )
+        return pd.DataFrame()
 
-            return pd.DataFrame()
+    # ========================================================
+    # ERREUR RÉSEAU
+    # ========================================================
 
-    return pd.DataFrame()
+    except requests.RequestException as exc:
+
+        logger.warning(
+            "Erreur réseau Twelve Data : %s",
+            exc,
+        )
+
+        fallback = _get_stale_cached(
+            symbol,
+            interval,
+            output_size,
+        )
+
+        if fallback is not None:
+
+            return fallback
+
+        return pd.DataFrame()
+
+    # ========================================================
+    # JSON
+    # ========================================================
+
+    except ValueError as exc:
+
+        logger.warning(
+            "JSON Twelve Data invalide : %s",
+            exc,
+        )
+
+        fallback = _get_stale_cached(
+            symbol,
+            interval,
+            output_size,
+        )
+
+        if fallback is not None:
+
+            return fallback
+
+        return pd.DataFrame()
