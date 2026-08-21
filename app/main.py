@@ -2,12 +2,12 @@
 Point d'entrée du moteur Nato Trade.
 
 Le moteur :
-- analyse H1 et M30 pour déterminer la tendance ;
-- analyse M15/M5/M1 pour rechercher les entrées ;
+- analyse H1 et M30 pour la tendance ;
+- analyse les timeframes d'entrée ;
 - évite les téléchargements doublons ;
-- évite de récupérer deux fois M5/M1 lorsque le scalping
-  et le mode prudent utilisent le même timeframe ;
-- envoie une notification lorsqu'un signal est détecté.
+- utilise le cache de data_fetch ;
+- respecte les limites Twelve Data ;
+- continue automatiquement après une limitation API.
 """
 
 import logging
@@ -24,7 +24,9 @@ from . import (
 )
 
 
-logger = logging.getLogger("nato_trade.main")
+logger = logging.getLogger(
+    "nato_trade.main"
+)
 
 
 # ============================================================
@@ -39,7 +41,7 @@ def analyze_asset(asset: str):
     )
 
     # ========================================================
-    # 1. TENDANCE H1
+    # H1
     # ========================================================
 
     df_h1 = data_fetch.fetch_candles(
@@ -58,7 +60,7 @@ def analyze_asset(asset: str):
         return
 
     # ========================================================
-    # 2. TENDANCE M30
+    # M30
     # ========================================================
 
     df_m30 = data_fetch.fetch_candles(
@@ -77,7 +79,7 @@ def analyze_asset(asset: str):
         return
 
     # ========================================================
-    # 3. INDICATEURS DE TENDANCE
+    # INDICATEURS
     # ========================================================
 
     df_h1 = indicators.add_trend_indicators(
@@ -88,12 +90,16 @@ def analyze_asset(asset: str):
         df_m30
     )
 
-    trend_h1 = indicators.get_trend_direction(
-        df_h1
+    trend_h1 = (
+        indicators.get_trend_direction(
+            df_h1
+        )
     )
 
-    trend_m30 = indicators.get_trend_direction(
-        df_m30
+    trend_m30 = (
+        indicators.get_trend_direction(
+            df_m30
+        )
     )
 
     database.log_trend_analysis(
@@ -102,7 +108,7 @@ def analyze_asset(asset: str):
     )
 
     # ========================================================
-    # 4. ALIGNEMENT H1 / M30
+    # ALIGNEMENT
     # ========================================================
 
     if (
@@ -110,36 +116,37 @@ def analyze_asset(asset: str):
         or trend_h1 == "neutre"
     ):
 
+        trend_direction = "neutre"
+
         logger.info(
-            "%s : pas de tendance claire alignée "
+            "%s : tendance non alignée "
             "(H1=%s, M30=%s)",
             asset,
             trend_h1,
             trend_m30,
         )
 
-        trend_direction = "neutre"
-
     else:
 
         trend_direction = trend_h1
 
         logger.info(
-            "%s : tendance de fond = %s",
+            "%s : tendance = %s",
             asset,
             trend_direction,
         )
 
     # ========================================================
-    # 5. TIMEFRAMES À RÉCUPÉRER
+    # TIMEFRAMES
     # ========================================================
 
     timeframes_to_fetch = []
 
-    # Mode prudent
     if trend_direction != "neutre":
 
-        for timeframe in config.TIMEFRAMES_ENTRY:
+        for timeframe in (
+            config.TIMEFRAMES_ENTRY
+        ):
 
             if timeframe not in timeframes_to_fetch:
 
@@ -147,10 +154,11 @@ def analyze_asset(asset: str):
                     timeframe
                 )
 
-    # Scalping
     if config.SCALPING_ENABLED:
 
-        for timeframe in config.SCALPING_TIMEFRAMES:
+        for timeframe in (
+            config.SCALPING_TIMEFRAMES
+        ):
 
             if timeframe not in timeframes_to_fetch:
 
@@ -159,7 +167,7 @@ def analyze_asset(asset: str):
                 )
 
     # ========================================================
-    # 6. RÉCUPÉRATION UNIQUE DES TIMEFRAMES
+    # CACHE / RÉCUPÉRATION UNIQUE
     # ========================================================
 
     candles_by_timeframe = {}
@@ -175,28 +183,35 @@ def analyze_asset(asset: str):
         if df.empty:
 
             logger.warning(
-                "Données manquantes pour %s/%s",
+                "Données absentes %s/%s",
                 asset,
                 timeframe,
             )
 
             continue
 
-        candles_by_timeframe[timeframe] = df
+        candles_by_timeframe[
+            timeframe
+        ] = df
 
     # ========================================================
-    # 7. MODE PRUDENT
+    # MODE PRUDENT
     # ========================================================
 
     if trend_direction != "neutre":
 
-        for timeframe in config.TIMEFRAMES_ENTRY:
+        for timeframe in (
+            config.TIMEFRAMES_ENTRY
+        ):
 
-            df_entry = candles_by_timeframe.get(
-                timeframe
+            df_entry = (
+                candles_by_timeframe.get(
+                    timeframe
+                )
             )
 
             if df_entry is None:
+
                 continue
 
             signal = signals.evaluate_entry(
@@ -210,8 +225,7 @@ def analyze_asset(asset: str):
             if signal:
 
                 logger.info(
-                    "SIGNAL PRUDENT détecté : "
-                    "%s %s %s",
+                    "SIGNAL PRUDENT : %s %s %s",
                     asset,
                     timeframe,
                     signal.direction,
@@ -226,18 +240,23 @@ def analyze_asset(asset: str):
                 )
 
     # ========================================================
-    # 8. MODE SCALPING
+    # SCALPING
     # ========================================================
 
     if config.SCALPING_ENABLED:
 
-        for timeframe in config.SCALPING_TIMEFRAMES:
+        for timeframe in (
+            config.SCALPING_TIMEFRAMES
+        ):
 
-            df_scalp = candles_by_timeframe.get(
-                timeframe
+            df_scalp = (
+                candles_by_timeframe.get(
+                    timeframe
+                )
             )
 
             if df_scalp is None:
+
                 continue
 
             signal = signals.evaluate_entry(
@@ -251,8 +270,7 @@ def analyze_asset(asset: str):
             if signal:
 
                 logger.info(
-                    "SIGNAL SCALPING détecté : "
-                    "%s %s %s",
+                    "SIGNAL SCALPING : %s %s %s",
                     asset,
                     timeframe,
                     signal.direction,
@@ -276,8 +294,7 @@ def run_forever():
     database.init_db()
 
     logger.info(
-        "Nato Trade démarré. "
-        "Actifs suivis: %s",
+        "Nato Trade démarré. Actifs suivis : %s",
         ", ".join(config.ASSETS),
     )
 
@@ -292,17 +309,10 @@ def run_forever():
             if not forex_active:
 
                 logger.info(
-                    "Hors horaires forex "
-                    "(Lun-Ven 8h-21h) : "
-                    "forex mis en pause, "
-                    "crypto continue"
+                    "Forex hors horaires : pause."
                 )
 
             for asset in config.ASSETS:
-
-                # ------------------------------------------------
-                # Forex hors horaires
-                # ------------------------------------------------
 
                 if (
                     asset in config.FOREX_ASSETS
@@ -320,36 +330,47 @@ def run_forever():
                 except Exception:
 
                     logger.exception(
-                        "Erreur inattendue lors "
-                        "de l'analyse de %s",
+                        "Erreur analyse %s",
                         asset,
                     )
 
-            # ----------------------------------------------------
-            # Pause entre les cycles.
-            #
-            # Le rate limiter de data_fetch.py reste le véritable
-            # garde-fou contre les limites Twelve Data.
-            # ----------------------------------------------------
+            # =================================================
+            # PAUSE ENTRE LES CYCLES
+            # =================================================
+
+            # On force une pause raisonnable.
+            # Le cache empêche les appels inutiles.
+            poll_interval = max(
+                int(
+                    getattr(
+                        config,
+                        "POLL_INTERVAL_ENTRY",
+                        300,
+                    )
+                ),
+                300,
+            )
+
+            logger.info(
+                "Prochain cycle dans %s secondes.",
+                poll_interval,
+            )
 
             time.sleep(
-                config.POLL_INTERVAL_ENTRY
+                poll_interval
             )
 
         except Exception:
 
             logger.exception(
-                "Erreur inattendue dans "
-                "la boucle principale"
+                "Erreur dans la boucle principale"
             )
 
-            # Empêche le moteur de redémarrer
-            # en boucle instantanément en cas d'erreur.
             time.sleep(30)
 
 
 # ============================================================
-# LANCEMENT DIRECT
+# LANCEMENT
 # ============================================================
 
 if __name__ == "__main__":
