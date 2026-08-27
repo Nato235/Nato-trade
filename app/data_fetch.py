@@ -6,9 +6,10 @@ Protection renforcée contre les limites API :
 - minimum 9 secondes entre deux appels ;
 - blocage global après limitation Twelve Data ;
 - cache partagé par symbole + timeframe ;
+- durée de cache adaptée à chaque timeframe ;
 - utilisation du cache pendant une limitation ;
-- reprise automatique après expiration du blocage ;
-- aucune nouvelle requête inutile pendant un blocage.
+- aucune nouvelle requête inutile pendant un blocage ;
+- protection contre les appels simultanés.
 """
 
 import time
@@ -43,8 +44,25 @@ _api_blocked_until = 0.0
 # CACHE
 # ============================================================
 
-# Cache frais pendant 5 minutes.
-_CACHE_TTL_SECONDS = 300
+# Cache adapté aux différents timeframes.
+#
+# H1  -> 5 minutes
+# M30 -> 3 minutes
+# M15 -> 2 minutes
+# M5  -> 1 minute
+# M1  -> 30 secondes
+#
+# Les timeframes non présents utilisent 2 minutes.
+
+_CACHE_TTLS = {
+    "1h": 300,
+    "30min": 180,
+    "15min": 120,
+    "5min": 60,
+    "1min": 30,
+}
+
+_DEFAULT_CACHE_TTL = 120
 
 _cache = {}
 _cache_lock = threading.Lock()
@@ -58,21 +76,150 @@ _session = requests.Session()
 
 
 # ============================================================
-# VÉRIFICATION DU BLOCAGE
+# OUTILS CACHE
+# ============================================================
+
+def _get_cache_ttl(interval: str) -> int:
+
+    return _CACHE_TTLS.get(
+        interval,
+        _DEFAULT_CACHE_TTL,
+    )
+
+
+def _get_cached(
+    symbol: str,
+    interval: str,
+    output_size: int,
+):
+
+    cache_key = (
+        symbol,
+        interval,
+    )
+
+    with _cache_lock:
+
+        cached = _cache.get(
+            cache_key
+        )
+
+        if not cached:
+            return None
+
+        timestamp, df = cached
+
+        age = (
+            time.time()
+            - timestamp
+        )
+
+        ttl = _get_cache_ttl(
+            interval
+        )
+
+        if age >= ttl:
+            return None
+
+        if len(df) < output_size:
+            return None
+
+        logger.debug(
+            "Cache frais utilisé : "
+            "%s/%s | âge=%.1fs | TTL=%ss",
+            symbol,
+            interval,
+            age,
+            ttl,
+        )
+
+        return (
+            df
+            .tail(output_size)
+            .copy()
+        )
+
+
+def _get_stale_cached(
+    symbol: str,
+    interval: str,
+    output_size: int = 200,
+):
+
+    cache_key = (
+        symbol,
+        interval,
+    )
+
+    with _cache_lock:
+
+        cached = _cache.get(
+            cache_key
+        )
+
+        if not cached:
+            return None
+
+        _, df = cached
+
+        if df.empty:
+            return None
+
+        logger.debug(
+            "Cache expiré utilisé : "
+            "%s/%s",
+            symbol,
+            interval,
+        )
+
+        return (
+            df
+            .tail(output_size)
+            .copy()
+        )
+
+
+def _save_cache(
+    symbol: str,
+    interval: str,
+    df: pd.DataFrame,
+):
+
+    cache_key = (
+        symbol,
+        interval,
+    )
+
+    with _cache_lock:
+
+        _cache[cache_key] = (
+            time.time(),
+            df.copy(),
+        )
+
+
+# ============================================================
+# VÉRIFICATION DU BLOCAGE API
 # ============================================================
 
 def _is_api_blocked():
 
     with _rate_limit_lock:
 
-        return time.time() < _api_blocked_until
+        return (
+            time.time()
+            < _api_blocked_until
+        )
 
 
 def _get_block_remaining():
 
     with _rate_limit_lock:
 
-        remaining = _api_blocked_until - time.time()
+        remaining = (
+            _api_blocked_until
+            - time.time()
+        )
 
         return max(
             0.0,
@@ -108,7 +255,7 @@ def _wait_for_api_slot():
                 wait = 0.0
 
             # ------------------------------------------------
-            # Supprimer les appels vieux de 60 secondes
+            # Supprimer les anciens appels
             # ------------------------------------------------
 
             while (
@@ -119,7 +266,7 @@ def _wait_for_api_slot():
                 _call_times.popleft()
 
             # ------------------------------------------------
-            # Maximum 7 appels/minute
+            # Maximum 7 appels / 60 secondes
             # ------------------------------------------------
 
             if (
@@ -130,12 +277,15 @@ def _wait_for_api_slot():
 
                 wait = (
                     60
-                    - (now - _call_times[0])
+                    - (
+                        now
+                        - _call_times[0]
+                    )
                     + 1.0
                 )
 
             # ------------------------------------------------
-            # Minimum entre deux appels
+            # Minimum 9 secondes entre appels
             # ------------------------------------------------
 
             if (
@@ -171,7 +321,8 @@ def _wait_for_api_slot():
                 return True
 
         logger.info(
-            "Twelve Data limité : attente %.1f secondes",
+            "Twelve Data limité : "
+            "attente %.1f secondes",
             wait,
         )
 
@@ -208,128 +359,10 @@ def _block_api(seconds: float):
             )
 
     logger.warning(
-        "Twelve Data temporairement bloqué pendant %.1f secondes",
+        "Twelve Data temporairement bloqué "
+        "pendant %.1f secondes",
         seconds,
     )
-
-
-# ============================================================
-# CACHE FRAIS
-# ============================================================
-
-def _get_cached(
-    symbol: str,
-    interval: str,
-    output_size: int,
-):
-
-    cache_key = (
-        symbol,
-        interval,
-    )
-
-    with _cache_lock:
-
-        cached = _cache.get(
-            cache_key
-        )
-
-        if not cached:
-            return None
-
-        timestamp, df = cached
-
-        age = (
-            time.time()
-            - timestamp
-        )
-
-        if age >= _CACHE_TTL_SECONDS:
-
-            return None
-
-        if len(df) < output_size:
-
-            return None
-
-        logger.debug(
-            "Cache frais utilisé : %s/%s",
-            symbol,
-            interval,
-        )
-
-        return (
-            df
-            .tail(output_size)
-            .copy()
-        )
-
-
-# ============================================================
-# CACHE EXPIRÉ
-# ============================================================
-
-def _get_stale_cached(
-    symbol: str,
-    interval: str,
-    output_size: int = 200,
-):
-
-    cache_key = (
-        symbol,
-        interval,
-    )
-
-    with _cache_lock:
-
-        cached = _cache.get(
-            cache_key
-        )
-
-        if not cached:
-
-            return None
-
-        _, df = cached
-
-        if df.empty:
-
-            return None
-
-        logger.debug(
-            "Cache expiré utilisé : %s/%s",
-            symbol,
-            interval,
-        )
-
-        return (
-            df
-            .tail(output_size)
-            .copy()
-        )
-
-
-# ============================================================
-# SAUVEGARDE CACHE
-# ============================================================
-
-def _save_cache(
-    symbol: str,
-    interval: str,
-    df: pd.DataFrame,
-):
-
-    cache_key = (
-        symbol,
-        interval,
-    )
-
-    with _cache_lock:
-
-        _cache[cache_key] = (
-            time.time(),
-            df.copy(),
-        )
 
 
 # ============================================================
@@ -365,7 +398,7 @@ def fetch_candles(
         return cached
 
     # ========================================================
-    # 2. SI API BLOQUÉE
+    # 2. VÉRIFIER LE BLOCAGE AVANT DE PRENDRE UN SLOT
     # ========================================================
 
     if _is_api_blocked():
@@ -383,7 +416,6 @@ def fetch_candles(
             interval,
         )
 
-        # Utiliser le cache expiré.
         fallback = _get_stale_cached(
             symbol,
             interval,
@@ -394,18 +426,48 @@ def fetch_candles(
 
             return fallback
 
-        # IMPORTANT :
-        # On ne fait PAS de nouvelle requête.
         return pd.DataFrame()
 
     # ========================================================
-    # 3. OBTENIR UN SLOT API
+    # 3. OBTENIR UN SLOT
     # ========================================================
 
     _wait_for_api_slot()
 
     # ========================================================
-    # 4. PARAMÈTRES
+    # 4. RE-VÉRIFIER LE BLOCAGE
+    #
+    # Important lorsqu'un autre thread a déclenché un 429
+    # pendant notre attente.
+    # ========================================================
+
+    if _is_api_blocked():
+
+        remaining = (
+            _get_block_remaining()
+        )
+
+        logger.warning(
+            "Blocage Twelve Data détecté "
+            "après attente du slot : "
+            "%.1f secondes restantes.",
+            remaining,
+        )
+
+        fallback = _get_stale_cached(
+            symbol,
+            interval,
+            output_size,
+        )
+
+        if fallback is not None:
+
+            return fallback
+
+        return pd.DataFrame()
+
+    # ========================================================
+    # 5. PARAMÈTRES
     # ========================================================
 
     params = {
@@ -416,10 +478,14 @@ def fetch_candles(
         "order": "ASC",
     }
 
-    max_attempts = 2
+    # Une seule tentative réelle.
+    #
+    # En cas de 429, on bloque l'API au lieu de retenter
+    # immédiatement et d'aggraver la limitation.
+    max_attempts = 1
 
     # ========================================================
-    # 5. REQUÊTE
+    # 6. REQUÊTE
     # ========================================================
 
     for attempt in range(
@@ -458,7 +524,10 @@ def fetch_candles(
                             retry_after
                         )
 
-                    except ValueError:
+                    except (
+                        ValueError,
+                        TypeError,
+                    ):
 
                         wait_seconds = 60.0
 
@@ -466,12 +535,20 @@ def fetch_candles(
 
                     wait_seconds = 60.0
 
+                # Sécurité :
+                # minimum 60 secondes de blocage.
+                wait_seconds = max(
+                    wait_seconds,
+                    60.0,
+                )
+
                 _block_api(
                     wait_seconds
                 )
 
                 logger.warning(
-                    "Twelve Data 429 pour %s/%s. "
+                    "Twelve Data 429 pour "
+                    "%s/%s. "
                     "Aucune nouvelle requête "
                     "pendant %.1f secondes.",
                     symbol,
@@ -636,10 +713,7 @@ def fetch_candles(
                 "close",
             ):
 
-                if (
-                    col
-                    not in df.columns
-                ):
+                if col not in df.columns:
 
                     logger.error(
                         "Colonne %s absente "
@@ -717,10 +791,14 @@ def fetch_candles(
 
             logger.info(
                 "Données récupérées : "
-                "%s/%s (%s bougies)",
+                "%s/%s (%s bougies) | "
+                "cache=%ss",
                 symbol,
                 interval,
                 len(df),
+                _get_cache_ttl(
+                    interval
+                ),
             )
 
             return (
@@ -797,6 +875,18 @@ def fetch_candles(
                 interval,
                 exc,
             )
+
+            fallback = (
+                _get_stale_cached(
+                    symbol,
+                    interval,
+                    output_size,
+                )
+            )
+
+            if fallback is not None:
+
+                return fallback
 
             return pd.DataFrame()
 
