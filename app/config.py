@@ -15,7 +15,7 @@ NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "nato-trade-CHANGE-MOI")
 NTFY_URL = f"https://ntfy.sh/{NTFY_TOPIC}"
 
 # --- Actifs suivis (7 actifs, sans l'or) ---
-FOREX_ASSETS = ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF"]
+FOREX_ASSETS = ["EUR/USD", "GBP/USD", "USD/JPY"]
 CRYPTO_ASSETS = ["BTC/USD", "ETH/USD", "XRP/USD"]
 ASSETS = FOREX_ASSETS + CRYPTO_ASSETS
 
