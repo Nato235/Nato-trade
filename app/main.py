@@ -33,15 +33,10 @@ logger = logging.getLogger("nato_trade.main")
 # PARAMÈTRES DE SÉCURITÉ API
 # ============================================================
 
-# Temps minimum avant de réanalyser le même actif.
-# Cela évite de marteler Twelve Data.
 ASSET_COOLDOWN_SECONDS = 120
 
-# Pause entre deux actifs.
-# Le rate limiter de data_fetch.py reste la protection principale.
 PAUSE_BETWEEN_ASSETS = 10
 
-# Mémorise la dernière analyse de chaque actif.
 _last_analysis = {}
 
 
@@ -64,8 +59,6 @@ def analyze_asset(asset: str):
 
         return
 
-    # On marque l'analyse avant de commencer afin d'éviter
-    # plusieurs analyses simultanées du même actif.
     _last_analysis[asset] = now
 
     logger.info(
@@ -175,7 +168,6 @@ def analyze_asset(asset: str):
 
     timeframes_to_fetch = []
 
-    # Mode prudent uniquement si tendance confirmée.
     if trend_direction != "neutre":
 
         for timeframe in config.TIMEFRAMES_ENTRY:
@@ -186,7 +178,6 @@ def analyze_asset(asset: str):
                     timeframe
                 )
 
-    # Scalping.
     if config.SCALPING_ENABLED:
 
         for timeframe in config.SCALPING_TIMEFRAMES:
@@ -246,6 +237,7 @@ def analyze_asset(asset: str):
             )
 
             if df_entry is None:
+
                 continue
 
             signal = signals.evaluate_entry(
@@ -289,6 +281,7 @@ def analyze_asset(asset: str):
             )
 
             if df_scalp is None:
+
                 continue
 
             signal = signals.evaluate_entry(
@@ -359,9 +352,6 @@ def analyze_assets_progressively():
                 asset,
             )
 
-        # Pause entre les actifs.
-        # Cela évite d'envoyer plusieurs requêtes
-        # immédiatement les unes derrière les autres.
         if index < len(assets):
 
             logger.info(
@@ -454,7 +444,6 @@ def run_forever():
                         asset,
                     )
 
-                # Pause entre les actifs.
                 if index < len(active_assets):
 
                     time.sleep(
@@ -465,15 +454,18 @@ def run_forever():
             # Pause entre les cycles complets
             # ------------------------------------------------
 
+            # Minimum 1 heure entre deux cycles.
+            # Cela protège le quota Twelve Data.
+
             poll_interval = max(
                 int(
                     getattr(
                         config,
                         "POLL_INTERVAL_ENTRY",
-                        300,
+                        3600,
                     )
                 ),
-                300,
+                3600,
             )
 
             logger.info(
